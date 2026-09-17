@@ -1,0 +1,8 @@
+本工作区已启用 git-management skill 的自动版本快照（仅本地 git，绝不推送远程）：
+
+1. 后台监听进程会持续监控本工程目录，文件一有改动就按 git-management 规则自动做本地快照
+   （限流：最快约每 60 秒产生一个快照；无改动时绝不产生空提交）。
+2. 你在本会话中新建 / 修改 / 删除文件后，应按 git-management skill 的规则处理版本快照。
+3. 需要手动快照、查看改动、查看历史或回退时，请使用 git-management skill。
+4. 安全铁律：只做本地提交；严禁 push 远程、严禁空提交、严禁修改 git config、
+   严禁未经用户明确要求执行破坏性操作（reset --hard / clean -fd / push --force）。
