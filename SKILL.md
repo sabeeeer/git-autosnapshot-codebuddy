@@ -50,7 +50,7 @@ tags: [git, 快照, snapshot, 版本管理, 本地仓库, commit, 回退, 版本
 
 ```powershell
 # 对指定目录快照（默认提交信息 snapshot: yyyy-MM-dd HH:mm）
-powershell -ExecutionPolicy Bypass -File "<skill目录>\scripts\snapshot.ps1" -Path "E:\1.My_CCS_DSP28335\0-0ai_test_project\2-2Svpwm_YJB"
+powershell -ExecutionPolicy Bypass -File "<skill目录>\scripts\snapshot.ps1" -Path "<你的工程目录>"
 
 # 自定义提交信息（定时快照命名规范）
 powershell -ExecutionPolicy Bypass -File "<skill目录>\scripts\snapshot.ps1" -Message "auto-snapshot 2026-09-16"
