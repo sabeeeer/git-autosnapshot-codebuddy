@@ -58,19 +58,19 @@ Linux/mac: ~/.codebuddy/skills/git-management/
     "SessionStart": [
       { "matcher": "startup",
         "hooks": [ { "type": "command",
-                     "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"<skill目录>/scripts/sessionstart.ps1\"",
+                     "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File \"<skill目录>/scripts/sessionstart.ps1\"",
                      "timeout": 30 } ] }
     ],
     "PostToolUse": [
       { "matcher": "Write|Edit|write_to_file|replace_in_file",
         "hooks": [ { "type": "command",
-                     "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"<skill目录>/scripts/autosnapshot.ps1\"",
+                     "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File \"<skill目录>/scripts/autosnapshot.ps1\"",
                      "timeout": 30 } ] }
     ],
     "SessionEnd": [
       { "matcher": "*",
         "hooks": [ { "type": "command",
-                     "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"<skill目录>/scripts/autosnapshot.ps1\" -Stop",
+                     "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File \"<skill目录>/scripts/autosnapshot.ps1\" -Stop",
                      "timeout": 20 } ] }
     ]
   }
@@ -83,14 +83,14 @@ Linux/mac: ~/.codebuddy/skills/git-management/
 
 ```powershell
 # 对指定目录做一次快照（默认提交信息 snapshot: yyyy-MM-dd HH:mm）
-powershell -ExecutionPolicy Bypass -File "<skill>\scripts\snapshot.ps1" -Path "<工程目录>"
+pwsh -ExecutionPolicy Bypass -File "<skill>\scripts\snapshot.ps1" -Path "<工程目录>"
 
 # 定时快照命名规范
-powershell -ExecutionPolicy Bypass -File "<skill>\scripts\snapshot.ps1" -Path "<工程>" -Message "auto-snapshot 2026-09-17"
+pwsh -ExecutionPolicy Bypass -File "<skill>\scripts\snapshot.ps1" -Path "<工程>" -Message "auto-snapshot 2026-09-17"
 
 # 手动启动/停止监听（前台可见，便于观察）
-powershell -ExecutionPolicy Bypass -File "<skill>\scripts\autosnapshot.ps1" -Watch -Echo -Path "<工程>"
-powershell -ExecutionPolicy Bypass -File "<skill>\scripts\autosnapshot.ps1" -Stop  -Echo -Path "<工程>"
+pwsh -ExecutionPolicy Bypass -File "<skill>\scripts\autosnapshot.ps1" -Watch -Echo -Path "<工程>"
+pwsh -ExecutionPolicy Bypass -File "<skill>\scripts\autosnapshot.ps1" -Stop  -Echo -Path "<工程>"
 
 # 查看快照历史 / 日志
 git -C "<工程>" log --oneline -20
@@ -123,6 +123,8 @@ git reflog                            # 误删提交时找回
 
 ## 7. 编码约定（改脚本前必读）
 
+引擎要求：**PowerShell 7.0+（pwsh）**——三个脚本首行都是 `#requires -Version 7.0`，hooks 用 pwsh.exe 绝对路径调用，不会退回 Windows PowerShell 5.1。
+
 `snapshot.ps1` 为 **UTF-8 with BOM**（含中文输出）；
-`autosnapshot.ps1` / `sessionstart.ps1` 为**纯 ASCII**（避免 PowerShell 5.1 按 ANSI 读取中文导致语法错误），
+`autosnapshot.ps1` / `sessionstart.ps1` 保持**纯 ASCII**（历史约定：兼容任意引擎、避免编码坑），
 中文提示放在 `session-context.txt`（按 UTF-8 显式读取）。修改脚本时请保持各自编码。

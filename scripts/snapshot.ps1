@@ -1,4 +1,5 @@
-﻿<#
+﻿#requires -Version 7.0
+<#
 .SYNOPSIS
     对指定目录做一次本地 Git 版本快照（不推送远程）。
 
@@ -15,10 +16,10 @@
     自定义提交信息。定时快照建议传 "auto-snapshot yyyy-MM-dd"。
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File snapshot.ps1 -Path "E:\proj\demo"
+    pwsh -ExecutionPolicy Bypass -File snapshot.ps1 -Path "E:\proj\demo"
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File snapshot.ps1 -Message "auto-snapshot 2026-09-16"
+    pwsh -ExecutionPolicy Bypass -File snapshot.ps1 -Message "auto-snapshot 2026-09-16"
 #>
 param(
     [string]$Path = ".",

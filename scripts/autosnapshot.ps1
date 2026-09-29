@@ -1,3 +1,4 @@
+#requires -Version 7.0
 <#
 .SYNOPSIS
     git-management skill - automatic git snapshot engine (rate-limited commit + optional file watcher).
@@ -153,11 +154,32 @@ if (-not $resolved) { exit 0 }
 $target = $resolved.Path
 $explicit = $resolved.Explicit
 
+function Test-AppInstallDir {
+    # never snapshot inside an installed desktop application folder (Electron layout:
+    # <app>\resources\app\package.json next to at least one <app>\*.exe), e.g. the
+    # CodeBuddy install directory - a git repo there breaks the app updater.
+    param([string]$Folder)
+    if ([string]::IsNullOrWhiteSpace($Folder)) { return $false }
+    $probe = ([System.IO.Path]::GetFullPath($Folder)).TrimEnd('\', '/')
+    for ($i = 0; $i -lt 4 -and $probe; $i++) {
+        if (Test-Path -LiteralPath (Join-Path $probe 'resources\app\package.json')) {
+            $exes = @(Get-ChildItem -LiteralPath $probe -Filter '*.exe' -File -ErrorAction SilentlyContinue)
+            if ($exes.Count -gt 0) { return $true }
+        }
+        $parent = Split-Path -Parent $probe
+        if (-not $parent -or $parent -eq $probe) { break }
+        $probe = $parent
+    }
+    return $false
+}
+
 function Test-SafeToInit {
-    # never create a repository in a drive root / user profile / system folder
+    # never create a repository in a drive root / user profile / system folder,
+    # nor inside an installed application directory (see Test-AppInstallDir)
     param([string]$Folder)
     $f = $Folder.TrimEnd('\', '/')
     if ($f -match '^[A-Za-z]:$') { return $false }
+    if (Test-AppInstallDir -Folder $f) { return $false }
     foreach ($b in @($env:USERPROFILE, $env:APPDATA, $env:LOCALAPPDATA, $env:ProgramData, $env:TEMP, $env:WINDIR, $env:ProgramFiles, ${env:ProgramFiles(x86)})) {
         if ([string]::IsNullOrWhiteSpace($b)) { continue }
         $bb = ([System.IO.Path]::GetFullPath($b)).TrimEnd('\', '/')
@@ -179,6 +201,9 @@ if (-not $repo) {
     if ($LASTEXITCODE -ne 0) { exit 0 }
     $repo = (Resolve-Path -LiteralPath $target).Path
 }
+
+# an installed application folder is never snapshotted, even if someone left a .git in it
+if (Test-AppInstallDir -Folder $repo) { exit 0 }
 
 # per-project opt-out: create <repo>/.codebuddy/autosnapshot.off to disable auto snapshots for that project
 if (Test-Path -LiteralPath (Join-Path $repo '.codebuddy/autosnapshot.off')) { exit 0 }

@@ -1,3 +1,4 @@
+#requires -Version 7.0
 <#
 .SYNOPSIS
     git-management skill - SessionStart hook: start the auto-snapshot watcher and inject skill context.
@@ -36,8 +37,16 @@ if (-not [string]::IsNullOrWhiteSpace($Path) -and $Path -notmatch '\$') {
 }
 
 if (Test-Path -LiteralPath $engine) {
+    # This skill targets PowerShell 7 (pwsh). Resolve the very same engine that runs this
+    # script so the background watcher never silently falls back to Windows PowerShell 5.1.
+    $psExe = Join-Path $PSHOME 'pwsh.exe'
+    if (-not (Test-Path -LiteralPath $psExe)) {
+        $cmd = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+        if ($cmd) { $psExe = $cmd.Source }
+    }
+    if (-not (Test-Path -LiteralPath $psExe)) { $psExe = 'pwsh.exe' }
     try {
-        Start-Process -FilePath 'powershell.exe' -ArgumentList $procArgs -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
+        Start-Process -FilePath $psExe -ArgumentList $procArgs -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
     }
     catch { }
 }
