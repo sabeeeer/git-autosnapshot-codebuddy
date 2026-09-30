@@ -23,6 +23,7 @@ tags: [git, 快照, snapshot, 版本管理, 本地仓库, commit, 回退, 版本
 | "回退到上次快照" / "撤销这次快照" | 执行「安全回退」，先备份再操作 |
 | "每天/定时自动快照" | 创建 automation（不要用本 skill 手工反复跑） |
 | "skill 都更新到最新了吗" / "有没有上传到 GitHub" / "传到哪了" | **先跑「同步状态体检」**，再回答 |
+| "体检一下" / "再检查一遍" / "这些检查以后自动跑" | 跑「一键自动体检」（`scripts\health_check.ps1`）；它已挂在自动链路上，正常情况直接读注入的结论即可 |
 
 ## 同步状态体检（AI 处理"是否最新 / 是否传上去了"时必须先跑）
 
@@ -62,6 +63,44 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File "<UploadRoot>\run_backup.ps1"
 ```
 
 （脚本幂等：无改动时什么都不做；带 `.run.lock` 单实例锁，与 13:50 的自动化并发时不会互相踩）
+
+## 一键自动体检（把上面那些检查合成一条，且已挂到自动链路）
+
+> 用户要求（2026-09-30）：**"这些检查命令以后自动运行，别每次让我开口。"**
+> → 所以**不要让用户逐条敲命令**：正常情况下直接看会话里注入的结论；要明细时才现跑一次。
+
+**自动运行（无需用户开口）**
+
+| 时机 | 谁触发 | 做什么 |
+|---|---|---|
+| 每次新会话 | `SessionStart` hook → `scripts/sessionstart.ps1` | 读 `<UploadRoot>\logs\health_last.txt` 的 `SUMMARY:` 行注入上下文；**没有报告时**才现场跑一次 `-Quick`（不联网）|
+| 每日备份之后 | `<UploadRoot>\run_backup.ps1` 末尾（13:52 计划任务、13:45 自动化都会走到）| 跑**全量**体检（含远端 SHA），报告写回 `logs\health_last.txt`，历史追加 `logs\health_history.log` |
+
+**手工随时体检（一条命令顶原先七条）**
+
+```bash
+pwsh -NoProfile -File "<skill目录>\scripts\health_check.ps1"               # 全量（联网验 SHA）
+pwsh -NoProfile -File "<skill目录>\scripts\health_check.ps1" -Quick        # 不联网
+pwsh -NoProfile -File "<skill目录>\scripts\health_check.ps1" -SummaryOnly  # 只输出一行结论（给 hook 用）
+pwsh -NoProfile -File "<skill目录>\scripts\health_check.ps1" -WriteLog     # 另写 health_last.txt
+```
+
+**七项检查**（每项独立，任一异常不影响其余）
+
+| # | 项 | 判定 |
+|---|---|---|
+| 1 | `automation` | `skill-github`(14:30) / `ai-memory-sync`(13:45) 存在且 `ACTIVE`，rrule 与 `restore-extras\automations.md` 一致 |
+| 2 | `计划任务` | `CodeBuddy-Wake-1345` / `App-1346` / `Backup-1352` 均 `Ready` |
+| 3 | `三套体系` | 复用 `check_sync_status.ps1`：镜像落差数 + 自建仓库未提交数 |
+| 4 | `记忆` | `memory\ai-memory.md` 条目数 + `sync_memory.py --check`（md/json 一致）|
+| 5 | `远端 SHA` | live `git ls-remote` 与本地 `HEAD` 逐一比对（`-Quick` 跳过）；主仓库额外确认 `memory/` 无未提交 |
+| 6 | `市场 skill` | `state.json` 里 `source=market` 的名字是否都在本机 |
+| 7 | `门禁` | `git config --global core.hooksPath` 已启用且含 `pre-push` |
+
+退出码：`0` 全绿 ｜ `2` 有警告 ｜ `1` 有失败。报告：`<UploadRoot>\logs\health_last.txt`（末行 `SUMMARY:` 便于程序读取）。
+
+> ⚠ 远端检查带 **15 秒超时**（`-RemoteTimeoutSec`）：`github.com` 不通时只报「无法读远端」警告，
+> 不会像裸 `git ls-remote` 那样挂 20 秒以上 —— 这是 hook / 计划任务里能安全调用的前提。
 
 ## 标准快照流程
 
