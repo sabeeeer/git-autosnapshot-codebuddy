@@ -13,6 +13,7 @@
 | 触发时机 | 机制 | 脚本 |
 |---|---|---|
 | 打开工程开始会话 | `SessionStart` hook：启动后台监听 + 注入上下文 | `scripts/sessionstart.ps1` |
+| **AI 删除文件前** | `PreToolUse` hook（matcher `delete_file`）：强制立即快照 | `scripts/autosnapshot.ps1 -IntervalSeconds 0` |
 | AI 新建/修改文件后 | `PostToolUse` hook（matcher `Write\|Edit`） | `scripts/autosnapshot.ps1` |
 | **用户手动 Ctrl+S 保存** | 后台监听进程轮询（Hook 感知不到编辑器保存） | `autosnapshot.ps1 -Watch` |
 | 会话结束 | `SessionEnd` hook：停止监听 | `autosnapshot.ps1 -Stop` |
@@ -60,6 +61,12 @@ Linux/mac: ~/.codebuddy/skills/git-management/
         "hooks": [ { "type": "command",
                      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File \"<skill目录>/scripts/sessionstart.ps1\"",
                      "timeout": 30 } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "delete_file|delete_files",
+        "hooks": [ { "type": "command",
+                     "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File \"<skill目录>/scripts/autosnapshot.ps1\" -IntervalSeconds 0 -Message \"pre-delete snapshot\"",
+                     "timeout": 60 } ] }
     ],
     "PostToolUse": [
       { "matcher": "Write|Edit|write_to_file|replace_in_file",

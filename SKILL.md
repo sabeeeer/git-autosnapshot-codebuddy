@@ -146,6 +146,7 @@ Skill 自身无法监听文件事件，"打开即生效 / 保存即快照"由 Co
 | 触发时机 | 机制 | 脚本 |
 |---|---|---|
 | 打开工程开始会话 | `SessionStart` hook：启动监听进程 + 注入"本工程启用 git-management"上下文 | `scripts/sessionstart.ps1` |
+| **AI 删除文件前** | `PreToolUse` hook（matcher `delete_file`）：忽略 60 秒限流，强制立即快照 | `scripts/autosnapshot.ps1 -IntervalSeconds 0` |
 | AI 新建/修改文件后 | `PostToolUse` hook（matcher `Write\|Edit`） | `scripts/autosnapshot.ps1` |
 | **用户手动 Ctrl+S 保存** | 后台监听进程轮询（Hook 感知不到编辑器保存，只能这样覆盖） | `autosnapshot.ps1 -Watch` |
 | 会话结束 | `SessionEnd` hook：停止监听进程 | `autosnapshot.ps1 -Stop` |
