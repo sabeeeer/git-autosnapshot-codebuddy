@@ -27,7 +27,8 @@ param(
     [string[]]$Path = @(),
     [switch]$All,
     [switch]$Status,
-    [switch]$Uninstall
+    [switch]$Uninstall,
+    [switch]$Global      # ★ 安装"全局门禁"：对本机所有（自己名下的）git 仓库生效
 )
 
 $ErrorActionPreference = 'Continue'
@@ -149,6 +150,51 @@ if (-not (Test-Path -LiteralPath $gatePath)) {
     Say ("  ✖ 找不到检查器: $gatePath") 'Red'; exit 1
 }
 Say ("  检查器: $gatePath") 'DarkGray'
+
+# ══ 全局安装：让门禁对本机**所有自己名下的仓库**生效 ═══════════════════════
+#   为什么需要：`core.hooksPath` 是**每仓库**配置 —— 只靠仓库内的 .githooks
+#   只能覆盖"装了的那一个仓库"。要做到"新机器上自动对这个前提生效"，
+#   必须注册**全局 hooksPath**（本目录），由本机所有仓库共享。
+#   同时记录 owner，只对"自己的仓库"生效，避免拦住 clone 的开源项目。
+if ($Global) {
+    $ghSrc = Join-Path $HOME 'CodeBuddy/skills-auto-upload/repo-root/global-hooks'
+    $ghDst = Join-Path $HOME '.codebuddy/global-hooks'
+    Say ''
+    Say '安装【全局】门禁（对本机所有自己名下的仓库生效）' 'Cyan'
+    if (-not (Test-Path -LiteralPath $ghSrc)) {
+        Say ("  ✖ 找不到全局 hooks 源: $ghSrc") 'Red'
+        Say '    （请先同步主仓库 codebuddy-skills，或用 -GlobalHooksSource 指定）' 'Red'
+        exit 1
+    }
+    if (-not (Test-Path -LiteralPath $ghDst)) { New-Item -ItemType Directory -Path $ghDst -Force | Out-Null }
+    Copy-Item -Path (Join-Path $ghSrc '*') -Destination $ghDst -Recurse -Force -ErrorAction SilentlyContinue
+    Copy-Item -LiteralPath $gatePath -Destination (Join-Path $ghDst 'portability_gate.ps1') -Force -ErrorAction SilentlyContinue
+    Say ("  ✔ 已放置 hook 与检查器 → " + $ghDst) 'Green'
+
+    $null = git config --global core.hooksPath $ghDst 2>&1
+    $cur = (git config --global --get core.hooksPath 2>&1 | Out-String).Trim()
+    if ($cur) { Say ("  ✔ core.hooksPath = " + $cur) 'Green' }
+    else {
+        Say '  ⚠ 设置失败，请手工执行：git config --global core.hooksPath "' -NoNewline 'Yellow'
+        Say ($ghDst + '"') 'Yellow'
+    }
+
+    $repoForOwner = Join-Path $HOME 'CodeBuddy/skills-auto-upload/repo'
+    $origin = (git -C $repoForOwner config --get remote.origin.url 2>&1 | Out-String).Trim()
+    $owner = ''
+    if ($origin -match 'github\.com[:/]([^/]+)/') { $owner = $Matches[1] }
+    if ($owner) {
+        $null = git config --global portability-gate.owner $owner 2>&1
+        Say ("  ✔ 生效范围: 仅 github.com/" + $owner + "/ 下的仓库（其他仓库自动跳过）") 'Green'
+    }
+    else {
+        Say '  ⚠ 未能识别 owner；请手工设置：git config --global portability-gate.owner <GitHub用户名>' 'Yellow'
+    }
+    Say ''
+    Say '  验证：任意自己名下的仓库 git push 时会自动检查' 'White'
+    Say '  关闭：git config --global --unset core.hooksPath' 'DarkGray'
+    exit 0
+}
 
 $repos = New-Object System.Collections.Generic.List[string]
 if ($All -or $Path.Count -eq 0) { Get-KnownRepos | ForEach-Object { $repos.Add($_) } }

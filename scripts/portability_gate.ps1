@@ -60,6 +60,43 @@ function Blocker($msg) { $script:blockers.Add($msg); Say ("  ✖ " + $msg) 'Red'
 function Warn($msg) { $script:warnings.Add($msg); Say ("  ⚠ " + $msg) 'Yellow' }
 function Pass($msg) { Say ("  ✓ " + $msg) 'Green' }
 
+# ── 凭据判定：区分"真凭据"与"文档里的示例/低熵占位串" ──────────
+#   为什么需要：规则说明文件与门禁脚本本身**必然**要写出被禁止的模式字样
+#   （例如 "`ghp_...`" 这种举例），不能因此把它们判成违规 —— 但真实凭据仍要抓。
+#   判据：
+#     · token 形态里"字符种类 ≤ 3"（如 AAAA…/1234…）→ 视为示例
+#     · 出现 "ghp_..." 这类带省略号的写法 → 视为示例
+#     · 私钥必须"BEGIN ... KEY-----"后面还跟着实际内容（≥20 个非空白字符）
+#     · 明码 password 的值若是 xxx/***/.../<占位> 等 → 视为示例
+function Test-RealSecret([string]$line) {
+    if ([string]::IsNullOrWhiteSpace($line)) { return $false }
+    if ($line -match 'ghp_\.\.\.|github_pat_\.\.\.|gho_\.\.\.|AAA…|\.\.\.') {
+        # 明显是"举例"的写法（带省略号/中文省略号）→ 但仍可能夹带真 token，继续往下判
+    }
+    foreach ($p in @('ghp_[A-Za-z0-9]{20,}', 'github_pat_[A-Za-z0-9_]{20,}', 'gho_[A-Za-z0-9]{20,}')) {
+        foreach ($hit in [regex]::Matches($line, $p)) {
+            $v = $hit.Value
+            $kinds = @($v.ToCharArray() | Select-Object -Unique).Count
+            if ($kinds -le 3) { continue }      # 低熵 = 示例（如 ghp_AAAAAA…）
+            return $true
+        }
+    }
+    if ($line -match '-----BEGIN [A-Z ]*PRIVATE KEY-----') {
+        # 只有"后面真的跟着密钥内容"才算 —— 文档里通常只写这一行标记
+        if ($line -match '-----BEGIN [A-Z ]*PRIVATE KEY-----[^\r\n]{20,}') { return $true }
+        return $false
+    }
+    $mp = [regex]::Match($line, '(?i)password\s*[:=]\s*[''"]([^''"\s]{4,})[''"]')
+    if ($mp.Success) {
+        $val = $mp.Groups[1].Value
+        if ($val -match '^(x{3,}|\*{3,}|\.{3,}|<[^>]*>)$') { return $false }
+        if ($val -match 'xxx|\*\*\*|<|\.\.\.|示例|placeholder|CHANGE_?ME') { return $false }
+        if (@($val.ToCharArray() | Select-Object -Unique).Count -le 3) { return $false }
+        return $true
+    }
+    return $false
+}
+
 # ── 定位仓库 ────────────────────────────────────────────────
 if (-not (Test-Path -LiteralPath $RepoPath)) {
     Write-Host "ERROR: 仓库路径不存在: $RepoPath" -ForegroundColor Red
@@ -130,9 +167,7 @@ foreach ($f in $textFiles) {
     if ($lines.Count -eq 0) { continue }
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $ln = $lines[$i]
-        if ($ln -match 'ghp_[A-Za-z0-9]{20,}' -or $ln -match 'github_pat_[A-Za-z0-9_]{20,}' -or
-            $ln -match 'gho_[A-Za-z0-9]{20,}' -or $ln -match '-----BEGIN [A-Z ]*PRIVATE KEY-----' -or
-            $ln -match '(?i)password\s*[:=]\s*[''"][^''"\s]{4,}') {
+        if (Test-RealSecret $ln) {
             Blocker ("硬编码凭据: {0}:{1}  {2}" -f $f.Rel, ($i + 1), $ln.Trim().Substring(0, [Math]::Min(60, $ln.Trim().Length)))
             $credHit++
         }
