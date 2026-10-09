@@ -1,5 +1,9 @@
 # Git 自动快照 - CodeBuddy（Skill）
 
+> [!WARNING]
+> 本地快照不等于异地备份。整个目录或磁盘损坏时无法恢复。
+> 详见 [`IRREPLACEABLE.md`](IRREPLACEABLE.md)。
+
 > 把任意工作目录登记成 Git 仓库，持续保存**可回退的本地快照**，完全不依赖远程仓库。
 > 由 CodeBuddy 的 Hooks + 后台监听进程实现「打开即生效、保存即快照」。
 

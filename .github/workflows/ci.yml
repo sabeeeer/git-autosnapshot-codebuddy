@@ -13,6 +13,16 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Required portability warning
+        shell: pwsh
+        run: |
+          if (-not (Test-Path IRREPLACEABLE.md)) { throw 'IRREPLACEABLE.md missing' }
+          if ((Get-Content IRREPLACEABLE.md -Raw) -notmatch 'WARNING|不可') { throw 'IRREPLACEABLE.md warning missing' }
+      - name: Portability gate
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File tools/portability_gate.ps1 -RepoPath .
+          if ($LASTEXITCODE -eq 1) { exit 1 } else { exit 0 }
       - name: PowerShell syntax
         shell: pwsh
         run: |
