@@ -31,6 +31,15 @@
     Custom commit message.
 .PARAMETER Echo
     Also print progress to the console (for manual runs). Hook runs stay silent by default.
+.PARAMETER Reap
+    Stop every watcher whose repository is no longer held by any CodeBuddy process
+    (orphan cleanup). Never touches watchers of projects that are still open.
+.PARAMETER ExitWhenWorkspaceClosed
+    Watch mode only: exit automatically as soon as no CodeBuddy process keeps the
+    repository as its current directory (i.e. the workspace folder was closed).
+.PARAMETER WorkspaceGraceSeconds
+    Watch mode + -ExitWhenWorkspaceClosed: do not run the closed-workspace check during
+    the first N seconds (default 30) so a just-started watcher is never killed by mistake.
 #>
 [CmdletBinding()]
 param(
@@ -38,6 +47,9 @@ param(
     [int]$IntervalSeconds = 60,
     [switch]$Watch,
     [switch]$Stop,
+    [switch]$Reap,
+    [switch]$ExitWhenWorkspaceClosed,
+    [int]$WorkspaceGraceSeconds = 30,
     [double]$MaxHours = 8,
     [string]$Message = "",
     [switch]$Echo,
@@ -105,6 +117,130 @@ function Test-PidAlive {
     param([int]$ProcessId)
     if ($ProcessId -le 0) { return $false }
     return [bool](Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
+}
+
+# ------------------------------------------------ process CWD / workspace liveness helpers
+# A directory cannot be deleted or renamed while a process keeps it as its current
+# directory. These helpers read other processes' CWDs (via the PEB) so the watcher can
+# (a) report / stop orphans, and (b) exit by itself once its workspace folder is closed.
+$script:CwdReaderState = $null   # $null = not tried, $true = ready, $false = unavailable
+
+function Initialize-CwdReader {
+    if ($null -ne $script:CwdReaderState) { return $script:CwdReaderState }
+    $script:CwdReaderState = $false
+    if (-not $IsWindows) { return $false }
+    if ([IntPtr]::Size -ne 8) { return $false }
+    $src = @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class ProcCwdReader {
+  [DllImport("kernel32.dll", SetLastError=true)]
+  static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+  [DllImport("ntdll.dll")]
+  static extern int NtQueryInformationProcess(IntPtr h, int cls, byte[] buf, int len, out int ret);
+  [DllImport("kernel32.dll")]
+  static extern bool ReadProcessMemory(IntPtr h, IntPtr addr, byte[] buf, int size, out IntPtr read);
+  [DllImport("kernel32.dll")]
+  static extern bool CloseHandle(IntPtr h);
+  public static string GetCwd(int pid) {
+    IntPtr h = OpenProcess(0x0410, false, pid);
+    if (h == IntPtr.Zero) { h = OpenProcess(0x1000, false, pid); }
+    if (h == IntPtr.Zero) { return null; }
+    try {
+      byte[] pbi = new byte[48];
+      int rl;
+      if (NtQueryInformationProcess(h, 0, pbi, 48, out rl) != 0) { return null; }
+      long peb = BitConverter.ToInt64(pbi, 8);
+      byte[] p8 = new byte[8];
+      IntPtr read;
+      if (!ReadProcessMemory(h, (IntPtr)(peb + 0x20), p8, 8, out read)) { return null; }
+      long pp = BitConverter.ToInt64(p8, 0);
+      byte[] p16 = new byte[16];
+      if (!ReadProcessMemory(h, (IntPtr)(pp + 0x38), p16, 16, out read)) { return null; }
+      ushort len = BitConverter.ToUInt16(p16, 0);
+      long bufPtr = BitConverter.ToInt64(p16, 8);
+      if (bufPtr == 0 || len == 0) { return null; }
+      if (len > 8192) { len = 8192; }
+      byte[] sb = new byte[len];
+      if (!ReadProcessMemory(h, (IntPtr)bufPtr, sb, len, out read)) { return null; }
+      return Encoding.Unicode.GetString(sb).TrimEnd('\0');
+    } finally { CloseHandle(h); }
+  }
+}
+'@
+    try {
+        if (-not ('ProcCwdReader' -as [type])) { Add-Type -TypeDefinition $src -Language CSharp | Out-Null }
+        $script:CwdReaderState = $true
+    }
+    catch { $script:CwdReaderState = $false }
+    return $script:CwdReaderState
+}
+
+function Get-ProcessCwd {
+    param([int]$ProcessId)
+    if (-not (Initialize-CwdReader)) { return "" }
+    try {
+        $c = [ProcCwdReader]::GetCwd($ProcessId)
+        if ([string]::IsNullOrWhiteSpace($c)) { return "" }
+        return $c.TrimEnd('\', '/')
+    }
+    catch { return "" }
+}
+
+function Test-PathInside {
+    param([string]$Child, [string]$Parent)
+    if ([string]::IsNullOrWhiteSpace($Child) -or [string]::IsNullOrWhiteSpace($Parent)) { return $false }
+    $c = $Child.TrimEnd('\', '/'); $p = $Parent.TrimEnd('\', '/')
+    if ($c.Equals($p, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    return $c.StartsWith($p + '\', [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-CodeBuddyProcessCwds {
+    # CWDs of every running CodeBuddy* process; $null means "cannot be determined"
+    if (-not (Initialize-CwdReader)) { return $null }
+    $list = @()
+    foreach ($p in (Get-Process -ErrorAction SilentlyContinue)) {
+        if ($p.ProcessName -notlike 'CodeBuddy*') { continue }
+        $c = Get-ProcessCwd -ProcessId $p.Id
+        if ($c) { $list += $c }
+    }
+    return $list
+}
+
+function Test-WorkspaceStillOpen {
+    # $true while at least one CodeBuddy process keeps this folder (or a sub folder) as CWD
+    param([string]$RepoPath)
+    $cwds = Get-CodeBuddyProcessCwds
+    if ($null -eq $cwds) { return $true }    # cannot tell -> assume open, never stop by mistake
+    foreach ($c in $cwds) { if (Test-PathInside -Child $c -Parent $RepoPath) { return $true } }
+    return $false
+}
+
+function Get-WatcherRepo {
+    # repository of a running autosnapshot watcher: explicit -Path first, else its own CWD
+    param([string]$CommandLine, [int]$ProcessId)
+    if ($CommandLine -match '(?i)-Path\s+"([^"]+)"') {
+        $cand = $Matches[1]
+        if (Test-Path -LiteralPath $cand -PathType Container) { return (Resolve-Path -LiteralPath $cand).Path }
+    }
+    elseif ($CommandLine -match '(?i)-Path\s+([^\s"]+)') {
+        $cand = $Matches[1]
+        if (Test-Path -LiteralPath $cand -PathType Container) { return (Resolve-Path -LiteralPath $cand).Path }
+    }
+    return (Get-ProcessCwd -ProcessId $ProcessId)
+}
+
+function Get-WatcherProcesses {
+    param([int]$ExcludePid = 0)
+    $out = @()
+    foreach ($proc in (Get-CimInstance Win32_Process -Filter "Name='pwsh.exe'" -ErrorAction SilentlyContinue)) {
+        if ($proc.ProcessId -eq $ExcludePid) { continue }
+        $cl = [string]$proc.CommandLine
+        if ($cl -notmatch 'autosnapshot\.ps1' -or $cl -notmatch '(?i)-Watch') { continue }
+        $out += [pscustomobject]@{ Pid = [int]$proc.ProcessId; CommandLine = $cl }
+    }
+    return $out
 }
 
 function Initialize-DefaultExcludes {
@@ -262,22 +398,63 @@ function Invoke-Snapshot {
     return $true
 }
 
+# ---------------------------------------------------------------- reap mode (orphan cleanup)
+if ($Reap) {
+    $stopped = 0; $kept = 0; $unknown = 0
+    $openCwds = Get-CodeBuddyProcessCwds
+    if ($null -eq $openCwds) {
+        Write-Log "reap: cannot read process CWDs, nothing done"
+        if ($Echo) { Write-Host "$Tag reap: cannot read process working directories - skipped" }
+        exit 0
+    }
+    foreach ($w in (Get-WatcherProcesses -ExcludePid $PID)) {
+        $wRepo = Get-WatcherRepo -CommandLine $w.CommandLine -ProcessId $w.Pid
+        if (-not $wRepo) { $unknown++; continue }
+        $open = $false
+        foreach ($c in $openCwds) { if (Test-PathInside -Child $c -Parent $wRepo) { $open = $true; break } }
+        if ($open) { $kept++; continue }
+        Stop-Process -Id $w.Pid -Force -ErrorAction SilentlyContinue
+        Write-Log ("reap: stopped orphan watcher PID {0} (repo {1})" -f $w.Pid, $wRepo)
+        $stopped++
+    }
+    Write-Log ("reap done: stopped={0} kept={1} unknown={2}" -f $stopped, $kept, $unknown)
+    if ($Echo) { Write-Host "$Tag reap: stopped=$stopped kept=$kept unknown=$unknown" }
+    exit 0
+}
+
 # ---------------------------------------------------------------- stop mode
 if ($Stop) {
+    $stopped = $false
     if (Test-Path -LiteralPath $PidFile) {
         $oldPid = 0
         try { $oldPid = [int](((Get-Content -LiteralPath $PidFile -Raw -ErrorAction SilentlyContinue) + '').Trim()) } catch { $oldPid = 0 }
         if (($oldPid -gt 0) -and ($oldPid -ne $PID) -and (Test-PidAlive -ProcessId $oldPid)) {
             Stop-Process -Id $oldPid -Force -ErrorAction SilentlyContinue
             Write-Log "watcher stopped (PID $oldPid)"
+            $stopped = $true
         }
         else {
-            Write-Log "watcher not running"
+            Write-Log "stale pid file (watcher not running)"
         }
         Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
     }
+    # the pid file may already be gone (folder content deleted, session ended abnormally) -
+    # fall back to scanning the running watcher processes and match them against this repo
+    foreach ($w in (Get-WatcherProcesses -ExcludePid $PID)) {
+        $wRepo = Get-WatcherRepo -CommandLine $w.CommandLine -ProcessId $w.Pid
+        if (-not $wRepo) { continue }
+        if ((Test-PathInside -Child $wRepo -Parent $repo) -or (Test-PathInside -Child $repo -Parent $wRepo)) {
+            Stop-Process -Id $w.Pid -Force -ErrorAction SilentlyContinue
+            Write-Log ("watcher stopped by scan (PID {0}, repo {1})" -f $w.Pid, $wRepo)
+            $stopped = $true
+        }
+    }
+    if ($stopped) {
+        if ($Echo) { Write-Host "$Tag watcher stopped" }
+    }
     else {
-        if ($Echo) { Write-Host "$Tag watcher not running (no pid file)" }
+        Write-Log "watcher not running"
+        if ($Echo) { Write-Host "$Tag watcher not running" }
     }
     exit 0
 }
@@ -301,12 +478,23 @@ if ($Watch) {
     [System.IO.File]::WriteAllText($PidFile, $PID.ToString())
     Write-Log ("watch start: {0} (poll {1}s, min interval {2}s, max {3}h)" -f $repo, $PollSeconds, $IntervalSeconds, $MaxHours)
     $deadline = (Get-Date).AddHours($MaxHours)
+    $graceEnd = (Get-Date).AddSeconds($WorkspaceGraceSeconds)
+    $stopReason = "watch reached max lifetime"
     try {
         while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds $PollSeconds
+            # self-healing: the workspace folder was closed -> do not linger and keep the
+            # folder locked as our current directory (that blocks delete/rename by hand)
+            if ($ExitWhenWorkspaceClosed -and (Get-Date) -gt $graceEnd) {
+                if (-not (Test-WorkspaceStillOpen -RepoPath $repo)) {
+                    $stopReason = "workspace closed (no CodeBuddy process keeps it as CWD any more)"
+                    if ($Echo) { Write-Host "$Tag workspace closed - watcher exits" }
+                    break
+                }
+            }
             Invoke-Snapshot -Reason "file-change" | Out-Null
         }
-        Write-Log "watch reached max lifetime, exiting"
+        Write-Log ($stopReason + ", exiting")
     }
     finally {
         Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue

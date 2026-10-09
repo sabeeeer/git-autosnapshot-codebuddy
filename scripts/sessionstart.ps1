@@ -33,21 +33,37 @@ if (-not (Test-Path -LiteralPath $psExe)) {
 if (-not (Test-Path -LiteralPath $psExe)) { $psExe = 'pwsh.exe' }
 
 $engine = Join-Path $PSScriptRoot 'autosnapshot.ps1'
+
+# Resolve the workspace folder explicitly and hand it to the watcher as -Path.
+# The watcher is started with a NEUTRAL working directory (see -WorkingDirectory below): a
+# left-over watcher must never keep the project folder locked, because a locked CWD is
+# exactly what makes Windows refuse to rename or delete that folder by hand.
+$workspace = ""
+if (-not [string]::IsNullOrWhiteSpace($Path) -and $Path -notmatch '\$') { $workspace = $Path }
+elseif ($env:CODEBUDDY_PROJECT_DIR -and (Test-Path -LiteralPath $env:CODEBUDDY_PROJECT_DIR -PathType Container)) { $workspace = $env:CODEBUDDY_PROJECT_DIR }
+elseif ($env:CLAUDE_PROJECT_DIR -and (Test-Path -LiteralPath $env:CLAUDE_PROJECT_DIR -PathType Container)) { $workspace = $env:CLAUDE_PROJECT_DIR }
+elseif (Test-Path -LiteralPath (Get-Location).Path -PathType Container) { $workspace = (Get-Location).Path }
+if ($workspace) { try { $workspace = (Resolve-Path -LiteralPath $workspace).Path } catch { } }
+
 $procArgs = @(
     '-NoProfile',
     '-ExecutionPolicy', 'Bypass',
     '-WindowStyle', 'Hidden',
     '-File', $engine,
     '-Watch',
-    '-IntervalSeconds', $IntervalSeconds
+    '-IntervalSeconds', $IntervalSeconds,
+    # leave within one poll cycle after the workspace folder has been closed
+    '-ExitWhenWorkspaceClosed'
 )
-if (-not [string]::IsNullOrWhiteSpace($Path) -and $Path -notmatch '\$') {
-    $procArgs += @('-Path', $Path)
-}
+if ($workspace) { $procArgs += @('-Path', $workspace) }
+
+# neutral working directory for the watcher (never the workspace itself)
+$startDir = $env:TEMP
+if ([string]::IsNullOrWhiteSpace($startDir) -or -not (Test-Path -LiteralPath $startDir -PathType Container)) { $startDir = $PSScriptRoot }
 
 if (Test-Path -LiteralPath $engine) {
     try {
-        Start-Process -FilePath $psExe -ArgumentList $procArgs -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
+        Start-Process -FilePath $psExe -ArgumentList $procArgs -WorkingDirectory $startDir -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
     }
     catch { }
 }

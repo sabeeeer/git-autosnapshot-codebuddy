@@ -171,6 +171,14 @@ Hook 配置写在**用户级** `~/.codebuddy/settings.json`（Windows 即 `C:\Us
 - **构建产物防护**：工程没有 `.gitignore` 时，自动把 `Debug/`、`Release/`、`*.obj`、`*.out`、`*.map` 等规则
   写入 `<.git>/info/exclude`（位于 `.git` 内部，不污染工程目录）；已有 `.gitignore` 的工程不干预
 - 单实例保护；监听进程最长运行 8 小时后自动退出（`-MaxHours`）
+- **工作区关闭后自动退出（2026-10-09 新增，根治"删不掉工程目录"）**：监听进程改为以**中性工作目录**（`%TEMP%`）启动、
+  显式携带 `-Path <工作区>`，并且每轮轮询（默认 5 秒）自检"是否还有 CodeBuddy 进程把该工作区当作当前目录"；
+  工作区文件夹一旦关闭，**最多一个轮询周期（默认 5 秒）内自行退出**。这样即便 `SessionEnd` hook 没触发或程序异常退出，
+  残留监听**也不会再把工程目录当 CWD 锁住**（锁住正是手动改名 / 删除失败的根因）。
+  - `-ExitWhenWorkspaceClosed`：开启该自检（默认关闭，由 `SessionStart` 开启；手动前台调试时可不开）
+  - `-WorkspaceGraceSeconds`（默认 30）：启动初期的宽限期，避免刚启动就被误判
+  - `-Reap`：立即清理历史遗留的孤儿监听（见下）
+  - 判据读不到进程工作目录时（非 Windows / 非 64 位 / 权限不足）**一律按"工作区仍打开"处理**，宁可留着也不误杀
 
 手动控制与排查：
 
@@ -178,8 +186,11 @@ Hook 配置写在**用户级** `~/.codebuddy/settings.json`（Windows 即 `C:\Us
 # 启动监听（前台可见，便于观察；-Path 可省略，默认按 $CODEBUDDY_PROJECT_DIR / 当前目录定位）
 pwsh -ExecutionPolicy Bypass -File "<skill目录>\scripts\autosnapshot.ps1" -Watch -Echo -Path "<工程目录>"
 
-# 停止监听（-Path 同样可省略）
+# 停止监听（-Path 同样可省略；PID 文件已丢失也能停 —— 会自动按进程扫描兜底）
 pwsh -ExecutionPolicy Bypass -File "<skill目录>\scripts\autosnapshot.ps1" -Stop -Echo -Path "<工程目录>"
+
+# 清理孤儿监听（工程已关闭、进程却还活着）：只停"没有任何 CodeBuddy 进程占用其目录"的监听，正在用的工程不受影响
+pwsh -ExecutionPolicy Bypass -File "<skill目录>\scripts\autosnapshot.ps1" -Reap -Echo
 
 # 查看自动快照日志 / 历史
 Get-Content "<工程目录>\.git\codebuddy-autosnapshot.log" -Tail 20
@@ -200,11 +211,15 @@ git -C "<工程目录>" log --oneline -20
 
 **处理顺序**：
 
-1. **先停监听**（`.git` 还在、PID 文件未丢时最省事）：
+1. **先停监听**（`.git` 还在、PID 文件未丢时最省事；**PID 文件已丢失也能停** —— 会自动按进程扫描兜底）：
 
    ```powershell
    pwsh -ExecutionPolicy Bypass -File "<skill目录>\scripts\autosnapshot.ps1" -Stop -Path "<工程目录>"
    ```
+
+   > **已从根上缓解（2026-10-09）**：`SessionStart` 现在以中性工作目录（`%TEMP%`）启动监听，并让它随工作区关闭自动退出
+   > （见「自动快照」章节）—— 正常关闭的工程不会再被残留监听锁住。本节的 1~2 步现在主要用于处理**历史遗留**或异常残留的监听；
+   > 一次性清理历史孤儿可直接跑 `-Reap`。
 
 2. **PID 文件已丢失**时，用只读排查脚本找出"当前目录落在该路径内"的进程（读进程 PEB，不杀任何东西）：
 
