@@ -121,7 +121,8 @@ git reflog                            # 误删提交时找回
 
 - 快照只保护**目录内已有的改动历史**：整个文件夹被删除或磁盘损坏时，本地 `.git` 一起丢失，无法恢复 ——
   需要异地备份或推到远程才真正安全。
-- `git add -A` 会把 `Debug/`、`*.obj`、`*.out`、`*.map` 等构建产物纳入（除非有 `.gitignore` 或被 `info/exclude` 排除）。
+- 快照通过**临时 Git index**扫描并提交全部工作区改动；不会在用户真实 index 上执行 `git add`。
+- `Debug/`、`*.obj`、`*.out`、`*.map` 等构建产物只有在 `.gitignore` 或 `info/exclude` 排除时才不会进入快照。
 - 提交失败常见原因：未配置 `user.name` / `user.email`。本 skill **不会替用户改 git config**，请自行执行：
   ```bash
   git config --global user.name  "你的名字"
@@ -129,6 +130,14 @@ git reflog                            # 误删提交时找回
   ```
 
 ## 7. 编码约定（改脚本前必读）
+
+修改快照引擎前先跑回归：
+
+```powershell
+pwsh -NoProfile -File tests/test_snapshot.ps1
+```
+
+回归会确认快照包含 staged + unstaged 改动，同时真实 `.git/index` 文件字节不变。
 
 引擎要求：**PowerShell 7.0+（pwsh）**——三个脚本首行都是 `#requires -Version 7.0`，hooks 用 pwsh.exe 绝对路径调用，不会退回 Windows PowerShell 5.1。
 

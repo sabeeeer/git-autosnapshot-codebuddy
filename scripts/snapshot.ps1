@@ -5,8 +5,8 @@
 
 .DESCRIPTION
     - 无 .git 时自动 git init
-    - 用 git status --porcelain 判断有无改动；无改动则直接退出（绝不产生空提交）
-    - 有改动则 git add -A 并提交，默认信息 "snapshot: yyyy-MM-dd HH:mm"
+    - 用临时 index 扫描工作区；无改动则直接退出（绝不产生空提交）
+    - 有改动则用临时 index 创建 snapshot commit；不执行会改写真实 index 的 `git add`
     - 只做本地操作：不推送远程、不修改 git config、不做任何破坏性操作
 
 .PARAMETER Path
@@ -40,32 +40,63 @@ try {
         Write-Output "[git-management] 已初始化仓库: $((Get-Location).Path)"
     }
 
-    $changes = @(git status --porcelain | Where-Object { $_ -ne "" })
-    if ($changes.Count -eq 0) {
-        Write-Output "[git-management] 无改动，跳过提交（不创建空提交）。"
-        exit 0
-    }
-
     if ([string]::IsNullOrWhiteSpace($Message)) {
         $Message = "snapshot: " + (Get-Date -Format "yyyy-MM-dd HH:mm")
     }
 
-    git add -A
-    if ($LASTEXITCODE -ne 0) { throw "git add -A 失败" }
+    $gitDir = (git rev-parse --git-dir).Trim()
+    if (-not [IO.Path]::IsPathRooted($gitDir)) { $gitDir = Join-Path (Get-Location).Path $gitDir }
+    $tempIndex = Join-Path $gitDir ('codebuddy-snapshot-' + [guid]::NewGuid().ToString('N') + '.index')
+    $oldIndex = $env:GIT_INDEX_FILE
+    try {
+        $env:GIT_INDEX_FILE = $tempIndex
+        $oldHead = (git rev-parse --verify HEAD 2>$null | Select-Object -First 1)
+        if ($LASTEXITCODE -eq 0 -and $oldHead) {
+            git read-tree $oldHead
+            if ($LASTEXITCODE -ne 0) { throw 'git read-tree HEAD 失败' }
+        }
+        git add -A
+        if ($LASTEXITCODE -ne 0) { throw 'git add -A 失败' }
 
-    $commitOut = git commit -m $Message 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Output "[git-management] 提交失败:"
-        Write-Output $commitOut
-        Write-Output "[git-management] 若提示缺少身份信息，请自行执行（本脚本不会替你修改 git config）:"
-        Write-Output '  git config --global user.name  "你的名字"'
-        Write-Output '  git config --global user.email "你的邮箱"'
-        exit 1
+        $changes = @(git diff --cached --name-only | Where-Object { $_ -ne '' })
+        if ($changes.Count -eq 0) {
+            Write-Output "[git-management] 无改动，跳过提交（不创建空提交）。"
+            exit 0
+        }
+
+        $tree = (git write-tree).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $tree) { throw 'git write-tree 失败' }
+
+        $idArgs = @()
+        $idName = (git config user.name 2>$null | Select-Object -First 1)
+        $idMail = (git config user.email 2>$null | Select-Object -First 1)
+        if ([string]::IsNullOrWhiteSpace($idName) -or [string]::IsNullOrWhiteSpace($idMail)) {
+            $idArgs = @('-c', 'user.name=CodeBuddy Auto Snapshot', '-c', 'user.email=autosnapshot@local')
+        }
+
+        $commitArgs = @('commit-tree', $tree)
+        if ($oldHead) { $commitArgs += @('-p', $oldHead) }
+        $commitArgs += @('-m', $Message)
+        $newHead = (git @idArgs @commitArgs 2>&1 | Select-Object -First 1).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $newHead) {
+            Write-Output '[git-management] 提交失败:'
+            Write-Output $newHead
+            exit 1
+        }
+
+        if ($oldHead) { git update-ref HEAD $newHead $oldHead }
+        else { git update-ref HEAD $newHead }
+        if ($LASTEXITCODE -ne 0) { throw 'git update-ref 失败' }
+    }
+    finally {
+        $env:GIT_INDEX_FILE = $oldIndex
+        Remove-Item -LiteralPath $tempIndex -Force -ErrorAction SilentlyContinue
     }
 
     $hash = (git rev-parse --short HEAD).Trim()
     Write-Output "[git-management] 快照完成: $hash  ($($changes.Count) 项改动)"
     Write-Output "[git-management] 提交信息: $Message"
+    Write-Output "[git-management] 已使用临时 index；真实 index 文件未被改写。"
     Write-Output "[git-management] 仅本地提交，未推送远程。"
 }
 finally {

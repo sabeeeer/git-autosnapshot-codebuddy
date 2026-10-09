@@ -5,7 +5,7 @@ description: >
   "使用快照任务"、"存个档"、"版本快照"、"看看有哪些改动"、"有没有未提交的"、"回退到上次快照"、"撤销这次提交"、
   "查看快照历史"、"skill 都更新到最新了吗"、"有没有上传到 GitHub"、"传到哪了" 等，
   或需要对某个目录做本地版本登记、改动检查、历史查看、安全回退时触发。核心流程：无 .git 时
-  git init → git status 检查 → 有改动才 git add -A 并提交 "snapshot: YYYY-MM-DD HH:MM"。安全铁律：只做本地操作，
+  git init → 临时 index 扫描工作区 → 有改动才用 `commit-tree` 生成快照。安全铁律：只做本地操作，
   绝不推送远程、绝不创建空提交、绝不修改 git config、绝不擅自执行破坏性操作（reset --hard / clean -fd / push --force）。
 tags: [git, 快照, snapshot, 版本管理, 本地仓库, commit, 回退, 版本控制]
 ---
@@ -117,7 +117,8 @@ pwsh -NoProfile -File "<skill目录>\scripts\health_check.ps1" -WriteLog     # �
    **严禁 `git commit --allow-empty`，严禁制造空提交。**
 5. **有改动才提交**：
    ```bash
-   git add -A
+   # 内部实现：临时 index + git add -A，不触碰用户真实 index
+   git add -A  # 仅设置 GIT_INDEX_FILE 的临时 index
    git commit -m "snapshot: YYYY-MM-DD HH:MM"
    ```
    - 手工/交互快照用：`snapshot: 2026-09-16 21:30`
@@ -275,7 +276,7 @@ git show <hash>                  # 某次快照详情
 
 - **快照只能保护"目录内已有的改动历史"**；若整个文件夹被删除或磁盘损坏，本地 `.git` 一起没了就无法恢复 —— 需要异地备份或推到远程才安全。务必向用户说明这一点。
 - **不做远程操作**：除非用户明确要求并确认，本 skill 只做本地提交，`git push` 一律不碰。
-- **构建产物/大文件**：`git add -A` 会把 `Debug/`、`*.obj`、`*.out`、`*.map` 等一起纳入。若用户在意仓库体积，建议写入 `.gitignore` 或改用针对性 `git add`。
+- **构建产物/大文件**：快照会把未被 `.gitignore` / `info/exclude` 排除的构建产物一起纳入。若用户在意仓库体积，建议写入 `.gitignore`。
 - **自动化自身目录**（如 `.codebuddy/`）：会被 `-A` 纳入快照。如不希望，就在 `.gitignore` 里排除。
 - **提交失败常见原因**：未配置 `user.name` / `user.email`。**不要替用户改 git config**，把修复命令告诉用户让其自行执行：
   ```bash

@@ -157,7 +157,10 @@ Say ("  检查器: $gatePath") 'DarkGray'
 #   必须注册**全局 hooksPath**（本目录），由本机所有仓库共享。
 #   同时记录 owner，只对"自己的仓库"生效，避免拦住 clone 的开源项目。
 if ($Global) {
-    $ghSrc = Join-Path $HOME 'CodeBuddy/skills-auto-upload/repo-root/global-hooks'
+    $ghSrc = Join-Path (Split-Path $PSScriptRoot -Parent) 'global-hooks'
+    if (-not (Test-Path -LiteralPath $ghSrc)) {
+        $ghSrc = Join-Path $HOME 'CodeBuddy/skills-auto-upload/repo-root/global-hooks'
+    }
     $ghDst = Join-Path $HOME '.codebuddy/global-hooks'
     Say ''
     Say '安装【全局】门禁（对本机所有自己名下的仓库生效）' 'Cyan'
@@ -171,9 +174,16 @@ if ($Global) {
     Copy-Item -LiteralPath $gatePath -Destination (Join-Path $ghDst 'portability_gate.ps1') -Force -ErrorAction SilentlyContinue
     Say ("  ✔ 已放置 hook 与检查器 → " + $ghDst) 'Green'
 
-    $null = git config --global core.hooksPath $ghDst 2>&1
     $cur = (git config --global --get core.hooksPath 2>&1 | Out-String).Trim()
-    if ($cur) { Say ("  ✔ core.hooksPath = " + $cur) 'Green' }
+    if ([string]::IsNullOrWhiteSpace($cur)) {
+        $null = git config --global core.hooksPath $ghDst 2>&1
+        $cur = (git config --global --get core.hooksPath 2>&1 | Out-String).Trim()
+    }
+    if ($cur -eq $ghDst) { Say ("  ✔ core.hooksPath = " + $cur) 'Green' }
+    elseif ($cur) {
+        Say ("  ⚠ 已有全局 core.hooksPath，未覆盖： " + $cur) 'Yellow'
+        Say "     本仓库内 pre-push 仍可按需单独安装。" 'DarkGray'
+    }
     else {
         Say '  ⚠ 设置失败，请手工执行：git config --global core.hooksPath "' -NoNewline 'Yellow'
         Say ($ghDst + '"') 'Yellow'

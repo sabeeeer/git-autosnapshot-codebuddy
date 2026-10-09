@@ -23,11 +23,14 @@ portability_gate.ps1 —— 可迁移性门禁（上传 GitHub 前的强制检�
   [拦截] 敏感文件：.env / *.pem / *.key / id_rsa* / *.pfx / gh_token.txt
   [拦截] 缺 RECOVER.md（仓库根必须存在 —— 它是"登录 GitHub 后的唯一入口"）
   [警告] 缺 README.md
+  [警告] 缺 AI 入口文件（AGENTS.md / CODEBUDDY.md / CLAUDE.md / .cursor/rules/*.mdc /
+         .github/copilot-instructions.md 任一）
   [警告] 大文件 > 50MB
   [警告] 关键脚本/目录名含非 ASCII 字符
 
 豁免机制（避免误伤"本职需要记录旧机样子"的工具）
-  1) 仓库根放 `.portability-allow` —— 每行一个正则，匹配到的**文件相对路径**跳过全部检查
+  1) 仓库根放 `.portability-allow` —— 每行一个正则，匹配到的**文件相对路径**跳过路径类检查。
+     凭据与敏感文件检查永远不会被豁免。
      例：`^skills/new-pc-migration/`（迁移工具必须记录旧机盘符）
   2) 文件内写注释 `portability:ignore-path` —— 该文件跳过"路径"检查（凭据检查仍生效）
 
@@ -61,40 +64,58 @@ function Warn($msg) { $script:warnings.Add($msg); Say ("  ⚠ " + $msg) 'Yellow'
 function Pass($msg) { Say ("  ✓ " + $msg) 'Green' }
 
 # ── 凭据判定：区分"真凭据"与"文档里的示例/低熵占位串" ──────────
-#   为什么需要：规则说明文件与门禁脚本本身**必然**要写出被禁止的模式字样
-#   （例如 "`ghp_...`" 这种举例），不能因此把它们判成违规 —— 但真实凭据仍要抓。
-#   判据：
-#     · token 形态里"字符种类 ≤ 3"（如 AAAA…/1234…）→ 视为示例
-#     · 出现 "ghp_..." 这类带省略号的写法 → 视为示例
-#     · 私钥必须"BEGIN ... KEY-----"后面还跟着实际内容（≥20 个非空白字符）
-#     · 明码 password 的值若是 xxx/***/.../<占位> 等 → 视为示例
-function Test-RealSecret([string]$line) {
-    if ([string]::IsNullOrWhiteSpace($line)) { return $false }
-    if ($line -match 'ghp_\.\.\.|github_pat_\.\.\.|gho_\.\.\.|AAA…|\.\.\.') {
-        # 明显是"举例"的写法（带省略号/中文省略号）→ 但仍可能夹带真 token，继续往下判
-    }
-    foreach ($p in @('ghp_[A-Za-z0-9]{20,}', 'github_pat_[A-Za-z0-9_]{20,}', 'gho_[A-Za-z0-9]{20,}')) {
-        foreach ($hit in [regex]::Matches($line, $p)) {
-            $v = $hit.Value
-            $kinds = @($v.ToCharArray() | Select-Object -Unique).Count
-            if ($kinds -le 3) { continue }      # 低熵 = 示例（如 ghp_AAAAAA…）
-            return $true
+#   凭据检查永远不会读取 .portability-allow 豁免；它必须对所有可扫描文件生效。
+$script:SecretPatterns = @(
+    @{ Name = 'GitHub token';        Pattern = '\bgh[pousr]_[A-Za-z0-9]{20,}\b' },
+    @{ Name = 'GitHub fine-grained'; Pattern = '\bgithub_pat_[A-Za-z0-9_]{20,}\b' },
+    @{ Name = 'OpenAI/DeepSeek key'; Pattern = '\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b' },
+    @{ Name = 'Slack token';         Pattern = '\bxox[baprs]-[A-Za-z0-9-]{10,}\b' },
+    @{ Name = 'AWS access key';      Pattern = '\bAKIA[0-9A-Z]{16}\b' },
+    @{ Name = 'Google API key';      Pattern = '\bAIza[0-9A-Za-z_-]{35}\b' },
+    @{ Name = 'GitLab token';        Pattern = '\bglpat-[A-Za-z0-9_-]{20,}\b' },
+    @{ Name = 'Hugging Face token';  Pattern = '\bhf_[A-Za-z0-9]{20,}\b' },
+    @{ Name = 'Stripe secret';       Pattern = '\b(?:sk|rk)_live_[A-Za-z0-9]{16,}\b' },
+    @{ Name = 'JWT';                 Pattern = '\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b' }
+)
+
+function Test-PlaceholderSecret([string]$value) {
+    if ([string]::IsNullOrWhiteSpace($value)) { return $true }
+    $v = $value.Trim().Trim('"', "'", '`')
+    if ($v.Length -lt 12) { return $true }
+    if ($v -match '(?i)example|placeholder|redacted|change[_-]?me|your[_-]|<[^>]+>|\.\.\.|xxx|\*\*\*|dummy|sample|test|proxy_managed') { return $true }
+    if ($v -match '^\$(?:\{)?[A-Za-z_]|^\{\{|^%[A-Za-z_]+%$|^process\.env|^os\.environ') { return $true }
+    if ($v -notmatch '[A-Za-z]' -or $v -notmatch '\d' -or $v -match '[/:]') { return $true }
+    if (@($v.ToCharArray() | Select-Object -Unique).Count -le 3) { return $true }
+    return $false
+}
+
+function Get-RealSecretHits([string]$text) {
+    $hits = New-Object System.Collections.Generic.List[string]
+    if ([string]::IsNullOrEmpty($text)) { return @() }
+
+    foreach ($entry in $script:SecretPatterns) {
+        foreach ($m in [regex]::Matches($text, $entry.Pattern)) {
+            if (-not (Test-PlaceholderSecret $m.Value)) { $hits.Add($entry.Name) }
         }
     }
-    if ($line -match '-----BEGIN [A-Z ]*PRIVATE KEY-----') {
-        # 只有"后面真的跟着密钥内容"才算 —— 文档里通常只写这一行标记
-        if ($line -match '-----BEGIN [A-Z ]*PRIVATE KEY-----[^\r\n]{20,}') { return $true }
-        return $false
+
+    # Private keys are normally multi-line. Require real key material after the header.
+    if ($text -match '(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?[A-Za-z0-9+/=]{64,}') {
+        $hits.Add('Private key')
     }
-    $mp = [regex]::Match($line, '(?i)password\s*[:=]\s*[''"]([^''"\s]{4,})[''"]')
-    if ($mp.Success) {
-        $val = $mp.Groups[1].Value
-        if ($val -match '^(x{3,}|\*{3,}|\.{3,}|<[^>]*>)$') { return $false }
-        if ($val -match 'xxx|\*\*\*|<|\.\.\.|示例|placeholder|CHANGE_?ME') { return $false }
-        if (@($val.ToCharArray() | Select-Object -Unique).Count -le 3) { return $false }
-        return $true
+
+    # Generic high-confidence assignments. This catches .env/config keys without a
+    # provider prefix, while ignoring placeholders and environment references.
+    $quotedRe = [regex]'(?im)^\s*(?:export\s+)?[A-Za-z0-9_.-]*(?:api[_-]?key|secret|token|password|passwd|credential|private[_-]?key)[A-Za-z0-9_.-]*\s*[:=]\s*["'']([^"'']{16,})["'']\s*(?:#.*)?$'
+    foreach ($m in $quotedRe.Matches($text)) {
+        if (-not (Test-PlaceholderSecret $m.Groups[1].Value)) { $hits.Add('Secret assignment') }
     }
-    return $false
+    $plainRe = [regex]'(?im)^\s*(?:export\s+)?[A-Za-z0-9_.-]*(?:api[_-]?key|secret|token|password|passwd|credential|private[_-]?key)[A-Za-z0-9_.-]*\s*[:=]\s*([A-Za-z0-9_\-\.=+/]{20,})\s*(?:#.*)?$'
+    foreach ($m in $plainRe.Matches($text)) {
+        if (-not (Test-PlaceholderSecret $m.Groups[1].Value)) { $hits.Add('Secret assignment') }
+    }
+
+    return @($hits | Select-Object -Unique)
 }
 
 # ── 定位仓库 ────────────────────────────────────────────────
@@ -140,7 +161,8 @@ if (-not $tracked -or $tracked.Count -eq 0) {
 }
 
 $textExt = @('.md', '.txt', '.ps1', '.psm1', '.py', '.js', '.ts', '.json', '.yml', '.yaml', '.toml',
-    '.ini', '.cfg', '.conf', '.c', '.h', '.cpp', '.cs', '.java', '.sh', '.bat', '.cmd', '.xml', '.csv', '.sql', '.cmd')
+    '.ini', '.cfg', '.conf', '.c', '.h', '.cpp', '.cs', '.java', '.sh', '.bat', '.cmd', '.xml', '.csv', '.sql',
+    '.env', '.properties', '.psd1', '.ipynb', '.m', '.r')
 $binExt = @('.exe', '.dll', '.zip', '.7z', '.rar', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf',
     '.docx', '.xlsx', '.pptx', '.mp3', '.mp4', '.bin', '.lib', '.obj', '.so', '.dylib', '.pyc')
 
@@ -149,28 +171,28 @@ foreach ($rel in $tracked) {
     $full = Join-Path $repo $rel
     if (-not (Test-Path -LiteralPath $full)) { continue }
     $ext = [IO.Path]::GetExtension($rel).ToLowerInvariant()
-    $isText = ($textExt -contains $ext) -or ($ext -eq '')
+    $isText = ($textExt -contains $ext) -or ($ext -eq '') -or ([IO.Path]::GetFileName($rel) -match '^\.env(?:\.|$)')
     $files.Add([pscustomobject]@{ Rel = $rel; Full = $full; Ext = $ext; IsText = $isText })
 }
 Say ("  待检查文件: {0} 个（git 跟踪）" -f $files.Count) 'DarkGray'
 if ($ListFiles) { $files | ForEach-Object { Say ("      " + $_.Rel) 'DarkGray' } }
 
 # ── 检查 1：硬编码凭据 ──────────────────────────────────────
-Head '检查 1：硬编码凭据'
+Head '检查 1：硬编码凭据（不可被 .portability-allow 豁免）'
 $credHit = 0
 $textFiles = @($files | Where-Object { $_.IsText })
-Say ("  文本文件 {0} 个（其中被豁免跳过 {1} 个）" -f $textFiles.Count, (@($textFiles | Where-Object { Is-Allowed $_.Rel }).Count)) 'DarkGray'
+Say ("  文本文件 {0} 个（全部参与凭据扫描）" -f $textFiles.Count) 'DarkGray'
 foreach ($f in $textFiles) {
-    if (Is-Allowed $f.Rel) { continue }
     $script:checkedCount++
-    $lines = @(Get-Content -LiteralPath $f.Full -Encoding utf8 -ErrorAction SilentlyContinue)
-    if ($lines.Count -eq 0) { continue }
-    for ($i = 0; $i -lt $lines.Count; $i++) {
-        $ln = $lines[$i]
-        if (Test-RealSecret $ln) {
-            Blocker ("硬编码凭据: {0}:{1}  {2}" -f $f.Rel, ($i + 1), $ln.Trim().Substring(0, [Math]::Min(60, $ln.Trim().Length)))
-            $credHit++
-        }
+    try {
+        $raw = [IO.File]::ReadAllText($f.Full, [Text.Encoding]::UTF8)
+    }
+    catch {
+        $raw = ''
+    }
+    foreach ($kind in (Get-RealSecretHits $raw)) {
+        Blocker ("硬编码凭据（{0}）: {1}" -f $kind, $f.Rel)
+        $credHit++
     }
 }
 if ($credHit -eq 0) { Pass '未发现硬编码凭据' }
@@ -178,18 +200,28 @@ if ($credHit -eq 0) { Pass '未发现硬编码凭据' }
 # ── 检查 2：机器绑定路径 ────────────────────────────────────
 Head '检查 2：机器绑定路径（C:\Users\<某人> 等）'
 $pathHit = 0
+$machineCodeExt = @('.ps1', '.psm1', '.py', '.json', '.toml', '.yaml', '.yml', '.sh', '.bat', '.cmd', '.ini', '.cfg', '.conf')
 foreach ($f in $files) {
     if (-not $f.IsText) { continue }
     if (Is-Allowed $f.Rel) { continue }
-    $lines = Get-Content -LiteralPath $f.Full -Encoding utf8 -ErrorAction SilentlyContinue
+    $lines = @(Get-Content -LiteralPath $f.Full -Encoding utf8 -ErrorAction SilentlyContinue)
     if (-not $lines) { continue }
     $hasIgnoreMark = ($lines -join "`n") -match 'portability:ignore-path'
     if ($hasIgnoreMark) { continue }
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $ln = $lines[$i]
         # 机器绑定：盘符 + Users\<具体用户名>（排除占位符/变量写法）
+        $pathSuspect = $false
         if ($ln -match '[A-Za-z]:\\+Users\\+\w+' -and
             $ln -notmatch '\\\\Users\\\\|%USERPROFILE%|\$env:USERPROFILE|<用户名>|<user>|<name>|\.\.\.') {
+            $pathSuspect = $true
+        }
+        elseif (($machineCodeExt -contains $f.Ext) -and
+            $ln -match '(?i)(?<![A-Za-z0-9_])(?:[A-Z]:\\[^"''\s;]+|/(?:Users|home)/[^/\s]+/[^"''\s;]+)' -and
+            $ln -notmatch '\$env:|%USERPROFILE%|<path>|<目录>|example|placeholder|https?://') {
+            $pathSuspect = $true
+        }
+        if ($pathSuspect) {
             Warn ("路径可疑: {0}:{1}  {2}" -f $f.Rel, ($i + 1), $ln.Trim().Substring(0, [Math]::Min(70, $ln.Trim().Length)))
             $pathHit++
             if ($pathHit -ge 40) { Warn '（已达 40 条上限，其余从略）'; break }
@@ -203,11 +235,11 @@ else {
 }
 
 # ── 检查 3：敏感文件 ────────────────────────────────────────
-Head '检查 3：敏感文件'
+Head '检查 3：敏感文件（不可被 .portability-allow 豁免）'
 $sensHit = 0
 foreach ($f in $files) {
-    if (Is-Allowed $f.Rel) { continue }
     $name = [IO.Path]::GetFileName($f.Rel)
+    if ($name -match '^\.env\.(?:example|sample|template)$') { continue }
     if ($name -match '^(\.env|\.env\..*|id_rsa.*|id_ed25519.*|gh_token\.txt)$' -or
         $f.Ext -in @('.pem', '.key', '.pfx', '.p12', '.keystore', '.jks')) {
         Blocker ("敏感文件不应入库: " + $f.Rel)
@@ -226,6 +258,19 @@ Head '检查 5：README.md'
 $hasReadme = @($files | Where-Object { $_.Rel -match '^(README|readme)\.md$' }).Count -gt 0
 if ($hasReadme) { Pass 'README.md 存在' }
 else { Warn '缺少 README.md（建议补一个简短说明）' }
+
+Head '检查 5b：AI 入口文件（AGENTS.md / CODEBUDDY.md / CLAUDE.md / .cursor / .github）'
+$aiRel = @($files | ForEach-Object { ($_.Rel -replace '\\', '/') })
+$aiHit = @($aiRel | Where-Object {
+        $_ -in @('AGENTS.md', 'CODEBUDDY.md', 'CLAUDE.md', '.github/copilot-instructions.md') -or
+        $_ -match '^\.cursor/rules/.+\.mdc$'
+    })
+if ($aiHit.Count -gt 0) {
+    Pass ('AI 入口: ' + ($aiHit -join ', '))
+}
+else {
+    Warn '缺少 AI 入口文件（AGENTS.md / CODEBUDDY.md / CLAUDE.md / .cursor/rules/*.mdc / .github/copilot-instructions.md 任一）'
+}
 
 # ── 检查 6：大文件 ──────────────────────────────────────────
 Head '检查 6：大文件（> 50MB）'
