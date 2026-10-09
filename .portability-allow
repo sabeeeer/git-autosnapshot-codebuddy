@@ -3,3 +3,4 @@
 ^scripts/find_lockers\.ps1$
 ^scripts/health_check\.ps1$
 ^scripts/snapshot\.ps1$
+^tools/
