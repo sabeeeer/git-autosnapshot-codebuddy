@@ -190,6 +190,40 @@ git -C "<工程目录>" log --oneline -20
 >
 > 脚本文件编码：`snapshot.ps1` 为 UTF-8 with BOM（含中文输出）；`autosnapshot.ps1` / `sessionstart.ps1` 保持纯 ASCII（历史约定：兼容任意引擎、避免编码坑），中文提示放在 `session-context.txt`（按 UTF-8 显式读取）。修改脚本时请保持各自编码。
 
+## 删除被快照监控的工程目录（重要）
+
+> **通用坑（2026-10-09 实测）**：删除曾被 CodeBuddy 作为工作区打开过的工程目录（含测试文件夹）时，
+> 报 `The process cannot access the file '...' because it is being used by another process`
+> —— 连**重命名也会失败**。根因：`SessionStart` 后台监听是经 `Start-Process` 拉起的，
+> **监听进程继承了该工作区的当前目录（CWD）**；Windows 不允许删除 / 重命名任何进程的当前目录。
+> 父会话退出后监听进程仍可能存活（最长 8 小时），PID 文件又随目录内容被删而丢失，容易误判为"谁都没占用"。
+
+**处理顺序**：
+
+1. **先停监听**（`.git` 还在、PID 文件未丢时最省事）：
+
+   ```powershell
+   pwsh -ExecutionPolicy Bypass -File "<skill目录>\scripts\autosnapshot.ps1" -Stop -Path "<工程目录>"
+   ```
+
+2. **PID 文件已丢失**时，用只读排查脚本找出"当前目录落在该路径内"的进程（读进程 PEB，不杀任何东西）：
+
+   ```powershell
+   pwsh -NoProfile -File "<skill目录>\scripts\find_lockers.ps1" -Path "<工程目录>"
+   ```
+
+   输出给出 `PID / 进程名 / CWD / 命令行`；确认是残留监听进程后用 `Stop-Process -Id <PID> -Force` 结束，再删目录。
+
+3. **`.git\objects` 里的对象文件带只读属性**，直接删会报 `Access to the path ... is denied` —— 先清只读：
+
+   ```powershell
+   Get-ChildItem "<目录>" -Recurse -Force | ForEach-Object { if ($_.IsReadOnly) { $_.IsReadOnly = $false } }
+   ```
+
+4. **CodeBuddy 会把 `Remove-Item` 重定向为"移到回收站"**（genie-trash），对含 `.git` 的目录容易失败且
+   **fail-closed（直接拒绝执行）**；需要永久删除时用
+   `[System.IO.Directory]::Delete('<目录>', $true)` 或 `cmd /c rd /s /q "<目录>"`。
+
 ## 安全回退（先备份，再操作）
 
 ```bash
