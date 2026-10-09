@@ -278,9 +278,9 @@ else {
 }
 
 Head '检查 5c：不可恢复边界警示（IRREPLACEABLE.md）'
-$irreplaceable = Join-Path $repo 'IRREPLACEABLE.md'
-if (Test-Path -LiteralPath $irreplaceable) {
-    $irText = Get-Content -LiteralPath $irreplaceable -Raw -Encoding utf8 -ErrorAction SilentlyContinue
+$irEntries = @($files | Where-Object { ($_.Rel -replace '\\', '/') -eq 'IRREPLACEABLE.md' })
+if ($irEntries.Count -gt 0 -and (Test-Path -LiteralPath $irEntries[0].Full)) {
+    $irText = Get-Content -LiteralPath $irEntries[0].Full -Raw -Encoding utf8 -ErrorAction SilentlyContinue
     if ($irText -match '(?i)WARNING|警告|不可自动') {
         Pass 'IRREPLACEABLE.md 存在且包含警示内容'
     }
