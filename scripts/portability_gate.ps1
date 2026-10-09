@@ -219,7 +219,7 @@ foreach ($f in $files) {
             $pathBlocking = ($machineCodeExt -contains $f.Ext)
         }
         elseif (($machineCodeExt -contains $f.Ext) -and
-            $ln -match '(?i)(?<![A-Za-z0-9_])(?:[A-Z]:\\[^"''\s;]+|/(?:Users|home)/[^/\s]+/[^"''\s;]+)' -and
+            $ln -match '(?i)(?<![A-Za-z0-9_\\])(?:[A-Z]:[\\/][^"''\s;]+|\\\\[A-Za-z0-9_.-]+[\\/][A-Za-z0-9_.-][^"''\s;]*|/(?:Users|home)/[^/\s]+/[^"''\s;]+)' -and
             $ln -notmatch '\$env:|%USERPROFILE%|<path>|<目录>|example|placeholder|https?://') {
             $pathSuspect = $true
             $pathBlocking = $true
