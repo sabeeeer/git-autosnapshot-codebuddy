@@ -299,6 +299,10 @@ git show <hash>                  # 某次快照详情
      环境变量/令牌文件只作兜底 —— 静态 PAT 会过期，keyring 凭据可续期。
    - 注意：改完 User 级环境变量，**已运行的 CodeBuddy 应用派生的终端仍带旧值**，重启应用才生效；
      脚本内的兜底正是为覆盖这段窗口。
+   - 不重启应用的入口：`~/gh-env.ps1` 已改为 **dot-source** 用法（`. "$HOME\gh-env.ps1"`），
+     会清掉进程里的旧 `GH_TOKEN` 再用 `gh auth token` 取 keyring 凭据。
+     必须用 dot-source：`-File` 是子进程，环境变量回不到当前会话；脚本内也不要用 `exit`，
+     否则 dot-source 会把调用者的 shell 一起关掉。
 
 2. **GitHub Actions `shell: pwsh` 会把"警告级退出码"判成步骤失败**
    - 现象：门禁输出"⚠ 门禁通过（有警告）"、脚本 `exit 2`，日志里没有 throw，
