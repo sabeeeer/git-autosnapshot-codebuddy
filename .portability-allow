@@ -1,0 +1,5 @@
+# Examples and conservative fallback locations for local developer machines.
+# Credential scanning remains active for every file.
+^scripts/find_lockers\.ps1$
+^scripts/health_check\.ps1$
+^scripts/snapshot\.ps1$

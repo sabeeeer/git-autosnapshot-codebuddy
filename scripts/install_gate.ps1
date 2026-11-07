@@ -70,11 +70,19 @@ elif [ -x "/c/Program Files/PowerShell/7/pwsh.exe" ]; then
 fi
 
 if [ -z "`$PWSH" ]; then
-    echo "[portability-gate] 跳过检查（未找到 pwsh；请安装 PowerShell 7）" >&2
-    exit 0
+    echo "❌ 可迁移性门禁无法运行 —— 推送已被拒绝。" >&2
+    echo "   原因：未找到 PowerShell 7（pwsh）。" >&2
+    echo "   处置：安装 PowerShell 7 后重试；不要在未检查时上传。" >&2
+    exit 1
 fi
 
 ROOT=`$(git rev-parse --show-toplevel 2>/dev/null)
+if [ ! -f "$gateUnix" ]; then
+    echo "❌ 可迁移性门禁无法运行 —— 推送已被拒绝。" >&2
+    echo "   原因：找不到检查器 $gateUnix" >&2
+    echo "   处置：重装门禁或恢复 tools/portability_gate.ps1 后重试。" >&2
+    exit 1
+fi
 "`$PWSH" -NoProfile -ExecutionPolicy Bypass -File "$gateUnix" -RepoPath "`$ROOT" -Quiet
 RC=`$?
 
@@ -85,6 +93,13 @@ if [ "`$RC" = "1" ]; then
     echo "     `$PWSH -NoProfile -File \"$gateUnix\" -RepoPath \"`$ROOT\"" >&2
     echo "   豁免：仓库根加 .portability-allow（每行一个正则），或文件内写 portability:ignore-path" >&2
     echo "" >&2
+    exit 1
+fi
+if [ "`$RC" != "0" ] && [ "`$RC" != "2" ]; then
+    echo "" >&2
+    echo "❌ 可迁移性门禁运行异常 —— 推送已被拒绝。" >&2
+    echo "   检查器退出码：`$RC（只允许 0=通过、2=有警告）" >&2
+    echo "   处置：修复门禁运行环境后重试。" >&2
     exit 1
 fi
 exit 0
@@ -157,7 +172,10 @@ Say ("  检查器: $gatePath") 'DarkGray'
 #   必须注册**全局 hooksPath**（本目录），由本机所有仓库共享。
 #   同时记录 owner，只对"自己的仓库"生效，避免拦住 clone 的开源项目。
 if ($Global) {
-    $ghSrc = Join-Path $HOME 'CodeBuddy/skills-auto-upload/repo-root/global-hooks'
+    $ghSrc = Join-Path (Split-Path $PSScriptRoot -Parent) 'global-hooks'
+    if (-not (Test-Path -LiteralPath $ghSrc)) {
+        $ghSrc = Join-Path $HOME 'CodeBuddy/skills-auto-upload/repo-root/global-hooks'
+    }
     $ghDst = Join-Path $HOME '.codebuddy/global-hooks'
     Say ''
     Say '安装【全局】门禁（对本机所有自己名下的仓库生效）' 'Cyan'
@@ -171,9 +189,16 @@ if ($Global) {
     Copy-Item -LiteralPath $gatePath -Destination (Join-Path $ghDst 'portability_gate.ps1') -Force -ErrorAction SilentlyContinue
     Say ("  ✔ 已放置 hook 与检查器 → " + $ghDst) 'Green'
 
-    $null = git config --global core.hooksPath $ghDst 2>&1
     $cur = (git config --global --get core.hooksPath 2>&1 | Out-String).Trim()
-    if ($cur) { Say ("  ✔ core.hooksPath = " + $cur) 'Green' }
+    if ([string]::IsNullOrWhiteSpace($cur)) {
+        $null = git config --global core.hooksPath $ghDst 2>&1
+        $cur = (git config --global --get core.hooksPath 2>&1 | Out-String).Trim()
+    }
+    if ($cur -eq $ghDst) { Say ("  ✔ core.hooksPath = " + $cur) 'Green' }
+    elseif ($cur) {
+        Say ("  ⚠ 已有全局 core.hooksPath，未覆盖： " + $cur) 'Yellow'
+        Say "     本仓库内 pre-push 仍可按需单独安装。" 'DarkGray'
+    }
     else {
         Say '  ⚠ 设置失败，请手工执行：git config --global core.hooksPath "' -NoNewline 'Yellow'
         Say ($ghDst + '"') 'Yellow'

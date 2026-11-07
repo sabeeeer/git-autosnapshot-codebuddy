@@ -8,7 +8,8 @@
         1. locate target repo (-Path, else $env:CODEBUDDY_PROJECT_DIR / $env:CLAUDE_PROJECT_DIR / cwd)
         2. if less than -IntervalSeconds elapsed since the last auto snapshot, exit quietly
         3. if "git status --porcelain" shows no change, exit quietly (never create an empty commit)
-        4. otherwise: git add -A + git commit -m "snapshot: yyyy-MM-dd HH:mm"
+        4. otherwise: use a temporary index + commit-tree to snapshot all worktree changes
+           without running git add/commit against the user's real index
 
     Mode 2 (-Watch): keep polling the folder and call the same rate-limited snapshot.
         - single-instance guard via pid file stored inside .git
@@ -367,29 +368,61 @@ function Invoke-Snapshot {
         }
     }
 
-    $changes = @(& git -C $repo status --porcelain 2>$null | Where-Object { $_ -ne '' })
-    if ($changes.Count -eq 0) { return $false }
-
     $msg = $Message
     if ([string]::IsNullOrWhiteSpace($msg)) { $msg = 'snapshot: ' + (Get-Date -Format 'yyyy-MM-dd HH:mm') }
 
-    & git -C $repo add -A 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { Write-Log "git add -A failed, skipped"; return $false }
+    # Use a private temporary index so the snapshot never runs git add/commit
+    # against the user's real index. The commit is created directly from the tree.
+    $tempIndex = Join-Path $gitDir ('codebuddy-snapshot-' + [guid]::NewGuid().ToString('N') + '.index')
+    $oldIndexEnv = $env:GIT_INDEX_FILE
+    try {
+        $env:GIT_INDEX_FILE = $tempIndex
+        $oldHead = (& git -C $repo rev-parse --verify HEAD 2>$null | Select-Object -First 1)
+        if ($LASTEXITCODE -eq 0 -and $oldHead) {
+            & git -C $repo read-tree $oldHead 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) { Write-Log 'git read-tree failed, skipped'; return $false }
+        }
 
-    # If no git identity is configured (global / system / local), fall back to a neutral author
-    # for this single command only - "git -c ..." never writes any config file.
-    $idArgs = @()
-    $idName = (& git -C $repo config user.name 2>$null | Select-Object -First 1)
-    $idMail = (& git -C $repo config user.email 2>$null | Select-Object -First 1)
-    if ([string]::IsNullOrWhiteSpace($idName) -or [string]::IsNullOrWhiteSpace($idMail)) {
-        $idArgs = @('-c', 'user.name=CodeBuddy Auto Snapshot', '-c', 'user.email=autosnapshot@local')
-        Write-Log "no git identity found; using 'CodeBuddy Auto Snapshot <autosnapshot@local>' for this commit only (set git config --global user.name/user.email to use your own name)"
+        & git -C $repo add -A 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { Write-Log "git add -A failed, skipped"; return $false }
+        $changes = @(& git -C $repo diff --cached --name-only 2>$null | Where-Object { $_ -ne '' })
+        if ($changes.Count -eq 0) { return $false }
+
+        $tree = (& git -C $repo write-tree 2>&1 | Select-Object -First 1).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $tree) {
+            Write-Log 'git write-tree failed, skipped'
+            return $false
+        }
+
+        # If no git identity is configured (global / system / local), fall back to a neutral author
+        # for this single command only - "git -c ..." never writes any config file.
+        $idArgs = @()
+        $idName = (& git -C $repo config user.name 2>$null | Select-Object -First 1)
+        $idMail = (& git -C $repo config user.email 2>$null | Select-Object -First 1)
+        if ([string]::IsNullOrWhiteSpace($idName) -or [string]::IsNullOrWhiteSpace($idMail)) {
+            $idArgs = @('-c', 'user.name=CodeBuddy Auto Snapshot', '-c', 'user.email=autosnapshot@local')
+            Write-Log "no git identity found; using 'CodeBuddy Auto Snapshot <autosnapshot@local>' for this commit only (set git config --global user.name/user.email to use your own name)"
+        }
+
+        $commitArgs = @('commit-tree', $tree)
+        if ($oldHead) { $commitArgs += @('-p', $oldHead) }
+        $commitArgs += @('-m', $msg)
+        $newHead = (& git -C $repo @idArgs @commitArgs 2>&1 | Select-Object -First 1).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $newHead) {
+            Write-Log ("git commit-tree failed: " + $newHead)
+            return $false
+        }
+
+        if ($oldHead) { & git -C $repo update-ref HEAD $newHead $oldHead 2>&1 | Out-Null }
+        else { & git -C $repo update-ref HEAD $newHead 2>&1 | Out-Null }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Log 'git update-ref failed, skipped'
+            return $false
+        }
     }
-
-    $out = & git -C $repo @idArgs commit -m $msg 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Log ("git commit failed: " + (($out | Out-String).Trim()))
-        return $false
+    finally {
+        $env:GIT_INDEX_FILE = $oldIndexEnv
+        Remove-Item -LiteralPath $tempIndex -Force -ErrorAction SilentlyContinue
     }
 
     [System.IO.File]::WriteAllText($StateFile, [DateTimeOffset]::UtcNow.ToUnixTimeSeconds().ToString())

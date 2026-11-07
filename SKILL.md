@@ -5,7 +5,7 @@ description: >
   "使用快照任务"、"存个档"、"版本快照"、"看看有哪些改动"、"有没有未提交的"、"回退到上次快照"、"撤销这次提交"、
   "查看快照历史"、"skill 都更新到最新了吗"、"有没有上传到 GitHub"、"传到哪了" 等，
   或需要对某个目录做本地版本登记、改动检查、历史查看、安全回退时触发。核心流程：无 .git 时
-  git init → git status 检查 → 有改动才 git add -A 并提交 "snapshot: YYYY-MM-DD HH:MM"。安全铁律：只做本地操作，
+  git init → 临时 index 扫描工作区 → 有改动才用 `commit-tree` 生成快照。安全铁律：只做本地操作，
   绝不推送远程、绝不创建空提交、绝不修改 git config、绝不擅自执行破坏性操作（reset --hard / clean -fd / push --force）。
 tags: [git, 快照, snapshot, 版本管理, 本地仓库, commit, 回退, 版本控制]
 ---
@@ -117,7 +117,8 @@ pwsh -NoProfile -File "<skill目录>\scripts\health_check.ps1" -WriteLog     # �
    **严禁 `git commit --allow-empty`，严禁制造空提交。**
 5. **有改动才提交**：
    ```bash
-   git add -A
+   # 内部实现：临时 index + git add -A，不触碰用户真实 index
+   git add -A  # 仅设置 GIT_INDEX_FILE 的临时 index
    git commit -m "snapshot: YYYY-MM-DD HH:MM"
    ```
    - 手工/交互快照用：`snapshot: 2026-09-16 21:30`
@@ -275,7 +276,7 @@ git show <hash>                  # 某次快照详情
 
 - **快照只能保护"目录内已有的改动历史"**；若整个文件夹被删除或磁盘损坏，本地 `.git` 一起没了就无法恢复 —— 需要异地备份或推到远程才安全。务必向用户说明这一点。
 - **不做远程操作**：除非用户明确要求并确认，本 skill 只做本地提交，`git push` 一律不碰。
-- **构建产物/大文件**：`git add -A` 会把 `Debug/`、`*.obj`、`*.out`、`*.map` 等一起纳入。若用户在意仓库体积，建议写入 `.gitignore` 或改用针对性 `git add`。
+- **构建产物/大文件**：快照会把未被 `.gitignore` / `info/exclude` 排除的构建产物一起纳入。若用户在意仓库体积，建议写入 `.gitignore`。
 - **自动化自身目录**（如 `.codebuddy/`）：会被 `-A` 纳入快照。如不希望，就在 `.gitignore` 里排除。
 - **提交失败常见原因**：未配置 `user.name` / `user.email`。**不要替用户改 git config**，把修复命令告诉用户让其自行执行：
   ```bash
@@ -284,3 +285,28 @@ git show <hash>                  # 某次快照详情
   ```
 - Windows 中文路径/文件名正常可用；`git status` 里显示 `\344\275\240` 这类转义只是显示问题，不影响内容。
 - 提交前若发现疑似密钥、密码、超大二进制文件，先停下来提醒用户确认。
+
+## GitHub 上传链路故障排查（2026-11-07 实测）
+
+两条"看起来像网络问题、其实是凭据/退出码"的坑，排查上传失败与 CI 失败邮件时先对一遍：
+
+1. **`GH_TOKEN` 里的过期 PAT 会盖掉 gh 的有效登录态**
+   - 判据：`gh auth status` 同时出现 `X Failed to log in ... using token (GH_TOKEN)`（Active account: true）
+     与 `✓ Logged in ... (keyring)`（Active account: false）；`gh api user` 返回 `HTTP 401: Bad credentials`。
+   - 根因：环境变量优先级高于 keyring，连 `gh auth token` 都会原样返回那个过期值。
+   - 解法：取有效凭据时**在子进程里移除** `GH_TOKEN`/`GITHUB_TOKEN` 再调 `gh auth token`；
+     并用结果更新 User 级 `GH_TOKEN` 与 `~/gh_token.txt`。自动上传脚本应把 gh 登录态作为首选来源，
+     环境变量/令牌文件只作兜底 —— 静态 PAT 会过期，keyring 凭据可续期。
+   - 注意：改完 User 级环境变量，**已运行的 CodeBuddy 应用派生的终端仍带旧值**，重启应用才生效；
+     脚本内的兜底正是为覆盖这段窗口。
+
+2. **GitHub Actions `shell: pwsh` 会把"警告级退出码"判成步骤失败**
+   - 现象：门禁输出"⚠ 门禁通过（有警告）"、脚本 `exit 2`，日志里没有 throw，
+     步骤却 `Process completed with exit code 1`，之后每个 push 都收到 `[repo] Run failed: ci` 邮件。
+   - 根因：runner 给 pwsh 脚本末尾追加 `exit $LASTEXITCODE`，残留的 2 被当成失败；
+     而纯内容备份的 push 也会触发 `on: push`，一天推两次就失败两次。
+   - 解法：步骤里判断完 rc 后**显式 `exit 0`** 归一化；并给 `on.push`/`on.pull_request` 加 `paths`
+     过滤，只在 `tools/`、`uploader/`、`.github/workflows/` 等工具链文件变化时跑回归，
+     全量回归留给 `workflow_dispatch`。
+   - 门禁退出码契约：`0`=通过、`1`=拦截（必须失败）、`2`=仅警告（允许上传）。
+     任何调用门禁的脚本/CI 都要显式处理 2，不能只判 `-ne 0`。
