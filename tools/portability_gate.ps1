@@ -212,17 +212,23 @@ foreach ($f in $files) {
         $ln = $lines[$i]
         # 机器绑定：盘符 + Users\<具体用户名>（排除占位符/变量写法）
         $pathSuspect = $false
+        $pathBlocking = $false
         if ($ln -match '[A-Za-z]:\\+Users\\+\w+' -and
             $ln -notmatch '\\\\Users\\\\|%USERPROFILE%|\$env:USERPROFILE|<用户名>|<user>|<name>|\.\.\.') {
             $pathSuspect = $true
+            $pathBlocking = ($machineCodeExt -contains $f.Ext)
         }
         elseif (($machineCodeExt -contains $f.Ext) -and
-            $ln -match '(?i)(?<![A-Za-z0-9_])(?:[A-Z]:\\[^"''\s;]+|/(?:Users|home)/[^/\s]+/[^"''\s;]+)' -and
+            # 负向断言额外排除 `<` 与 `/`：避免把 XML/正则里的 `</c:\w+Chart>`（命名空间闭合写法）
+            # 误判成 `C:\` 盘符（2026-10-17 实测：docx/pptx/xlsx 的 pptx_chart.py 因此被误拦）。
+            $ln -match '(?i)(?<![A-Za-z0-9_\\</])(?:[A-Z]:[\\/][^"''\s;]+|\\\\[A-Za-z0-9_.-]+[\\/][A-Za-z0-9_.-][^"''\s;]*|/(?:Users|home)/[^/\s]+/[^"''\s;]+)' -and
             $ln -notmatch '\$env:|%USERPROFILE%|<path>|<目录>|example|placeholder|https?://') {
             $pathSuspect = $true
+            $pathBlocking = $true
         }
         if ($pathSuspect) {
-            Warn ("路径可疑: {0}:{1}  {2}" -f $f.Rel, ($i + 1), $ln.Trim().Substring(0, [Math]::Min(70, $ln.Trim().Length)))
+            $message = ("机器绑定路径: {0}:{1}  {2}" -f $f.Rel, ($i + 1), $ln.Trim().Substring(0, [Math]::Min(70, $ln.Trim().Length)))
+            if ($pathBlocking) { Blocker $message } else { Warn $message }
             $pathHit++
             if ($pathHit -ge 40) { Warn '（已达 40 条上限，其余从略）'; break }
         }
@@ -231,7 +237,8 @@ foreach ($f in $files) {
 }
 if ($pathHit -eq 0) { Pass '未发现机器绑定的绝对路径' }
 else {
-    Warn ("共 {0} 处 —— 若是**文档示例**或**迁移工具本职**，请在仓库根 .portability-allow 里豁免（例：^skills/new-pc-migration/）" -f $pathHit)
+    Say ("  共 {0} 处 —— 代码/配置中的机器绑定路径会拦截；文档示例为警告。" -f $pathHit) 'Yellow'
+    Say '  若是迁移工具本职或明确兼容层，请在 .portability-allow 中按路径说明并豁免。' 'DarkGray'
 }
 
 # ── 检查 3：敏感文件 ────────────────────────────────────────
@@ -273,9 +280,9 @@ else {
 }
 
 Head '检查 5c：不可恢复边界警示（IRREPLACEABLE.md）'
-$irreplaceable = Join-Path $repo 'IRREPLACEABLE.md'
-if (Test-Path -LiteralPath $irreplaceable) {
-    $irText = Get-Content -LiteralPath $irreplaceable -Raw -Encoding utf8 -ErrorAction SilentlyContinue
+$irEntries = @($files | Where-Object { ($_.Rel -replace '\\', '/') -eq 'IRREPLACEABLE.md' })
+if ($irEntries.Count -gt 0 -and (Test-Path -LiteralPath $irEntries[0].Full)) {
+    $irText = Get-Content -LiteralPath $irEntries[0].Full -Raw -Encoding utf8 -ErrorAction SilentlyContinue
     if ($irText -match '(?i)WARNING|警告|不可自动') {
         Pass 'IRREPLACEABLE.md 存在且包含警示内容'
     }
