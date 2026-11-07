@@ -9,7 +9,7 @@ check_sync_status.ps1 —— 一次看清所有 skill 的"最新状态"
   "已经同步到最新"的错误结论 —— 这是真实踩过的坑：
 
     ① **各 skill 自己的 git 仓库**
-       例：ti-c2000-ccs-auto → git@github.com:sabeeeer/DSP-auto-debug.git
+       例：ti-c2000-ccs-auto → git@github.com:sabeeeer/ti-c2000-ccs-auto.git
        只有 2 个 skill 是这种（ti-c2000-ccs-auto、git-management）
 
     ② **skills-auto-upload 自动上传系统**（每天 13:50 automation + 13:52 计划任务）
