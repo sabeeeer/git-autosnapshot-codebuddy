@@ -251,7 +251,8 @@ else {
     $repos = @(
         [pscustomobject]@{ Name = 'codebuddy-skills';          Path = (Join-Path $UploadRoot 'repo');                       Main = $true },
         [pscustomobject]@{ Name = 'git-autosnapshot-codebuddy'; Path = (Join-Path $SkillsRoot 'git-management');               Main = $false },
-        [pscustomobject]@{ Name = 'ti-c2000-ccs-auto';            Path = (Join-Path $SkillsRoot 'ti-c2000-ccs-auto');           Main = $false }
+        [pscustomobject]@{ Name = 'ti-c2000-ccs-auto';            Path = (Join-Path $SkillsRoot 'ti-c2000-ccs-auto');           Main = $false },
+        [pscustomobject]@{ Name = 'scope-skill';                  Path = (Join-Path $SkillsRoot 'scope');                       Main = $false }
     )
     $mismatch = @(); $unreach = @(); $checked = 0
     foreach ($rp in $repos) {
