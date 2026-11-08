@@ -202,7 +202,10 @@ else {
     else {
         $lv = 'OK'
         if ($gap -gt 0) { $lv = 'WARN' }
-        if ($uncommit -gt 0) { $lv = 'WARN' }
+        # 2026-11-08：skill 自带 git 仓库里有未提交改动 = 换机就丢的真实功能改动，
+        # 按「GitHub 是唯一真相」必须判 FAIL，不能只当 WARN 被"0 失败"掩盖。
+        # 昨天 13 项未提交的 DSP 改动正是因为只判 WARN 而被忽略。
+        if ($uncommit -gt 0) { $lv = 'FAIL' }
         Say ('   本地 ' + $localN + ' 个 skill ｜ 与镜像一致 ' + $mirrorOk + ' ｜ 落差 ' + $gap + ' ｜ 自建仓库未提交 ' + $uncommit) $(if ($lv -eq 'OK') { 'Green' } else { 'Yellow' })
         Say ('   上次上传：' + $lastUp)
         Add-Result '三套体系' $lv ('落差' + $gap + '/未提交' + $uncommit)

@@ -314,3 +314,15 @@ git show <hash>                  # 某次快照详情
      全量回归留给 `workflow_dispatch`。
    - 门禁退出码契约：`0`=通过、`1`=拦截（必须失败）、`2`=仅警告（允许上传）。
      任何调用门禁的脚本/CI 都要显式处理 2，不能只判 `-ne 0`。
+
+3. **「远端 SHA 一致」不等于「改动都在 GitHub 上」**（2026-11-08 实测）
+   - 体检第 5 项只比 `git rev-parse HEAD` 与 `ls-remote`：工作区有一堆**未提交**改动时
+     HEAD 不变，照样显示「4/4 一致」；而第 3 项「自建仓库未提交」过去只判 WARN，
+     于是结论能是「0 失败」，真实功能改动却停在本地，换机即丢。
+   - 实测：2026-11-07 16:15~16:33 改的 13 个 DSP skill 文件（含 2 个新增测试）直到
+     11-08 13:59 才提交推送为 `5115d6e`；期间体检一度显示「未提交13 / 远端SHA 4/4 一致」。
+   - 修复：`health_check.ps1` 第 3 项把 `未提交 > 0` 从 WARN 升为 **FAIL**。
+   - 排查上传是否完整，不能只看体检摘要，还要逐个自建仓库跑：
+     `git -C <dir> status --porcelain` 和 `git -C <dir> log --oneline origin/main..HEAD`。
+   - 三套体系彼此独立：文件内容进了 `codebuddy-skills` 镜像 ≠ 该 skill 自带的
+     `DSP-auto-debug` / `git-autosnapshot-codebuddy` 仓库也有对应 commit。
